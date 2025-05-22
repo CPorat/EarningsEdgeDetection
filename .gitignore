@@ -13,6 +13,10 @@ __pycache__/
 venv/
 env/
 ENV/
+
+# env
+.env
+.envrc
  
 # IDE specific files
 .idea/
@@ -26,3 +30,4 @@ Thumbs.db
  
 # Generated files
 recommended_*.txt
+.aider*

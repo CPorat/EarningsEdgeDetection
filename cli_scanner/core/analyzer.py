@@ -66,6 +66,9 @@ class OptionsAnalyzer:
             result = np.sqrt(open_vol + k * close_vol + (1 - k) * window_rs) * np.sqrt(trading_periods)
             
             if return_last_only:
+                if result.empty:
+                    warnings.warn("Volatility calculation (Yang-Zhang) resulted in an empty Series before taking last element.")
+                    return np.nan
                 return result.iloc[-1]
             return result.dropna()
             
@@ -84,6 +87,9 @@ class OptionsAnalyzer:
             returns = price_data['Close'].pct_change().dropna()
             vol = returns.rolling(window=window).std() * np.sqrt(trading_periods)
             if return_last_only:
+                if vol.empty:
+                    warnings.warn("Simple volatility calculation resulted in an empty Series before taking last element.")
+                    return np.nan
                 return vol.iloc[-1]
             return vol
         except Exception as e:
@@ -130,8 +136,9 @@ class OptionsAnalyzer:
 
             # Get current price
             hist = stock.history(period='1d')
-            if hist.empty:
-                return {"error": "No price data available"}
+            if hist.empty or 'Close' not in hist.columns or hist['Close'].dropna().empty:
+                logger.warning(f"No sufficient 1-day price data for {ticker} to determine current price. History rows: {len(hist) if not hist.empty else 0}.")
+                return {"error": f"No sufficient 1-day price data available for {ticker} to determine current price."}
             current_price = hist['Close'].iloc[-1]
 
             # Calculate ATM IV for each expiration
@@ -179,10 +186,39 @@ class OptionsAnalyzer:
 
             # Calculate historical volatility
             hist_data = stock.history(period='3mo')
-            hist_vol = self.yang_zhang_volatility(hist_data)
-            
-            # Get volume data
-            avg_volume = hist_data['Volume'].rolling(30).mean().dropna().iloc[-1]
+            hist_vol = np.nan  # Default value
+            avg_volume = 0.0  # Default value, ensure float
+
+            if hist_data.empty:
+                logger.warning(f"No 3-month historical data for {ticker} (history is empty).")
+            else:
+                # Calculate historical volatility
+                if 'Close' in hist_data.columns and not hist_data['Close'].dropna().empty:
+                    close_data_len = len(hist_data['Close'].dropna())
+                    # Yang-Zhang default window is 30. Simple vol pct_change needs at least 2.
+                    if close_data_len >= 30: # Sufficient for YZ default window
+                        hist_vol = self.yang_zhang_volatility(hist_data)
+                    elif close_data_len >= 2: # Sufficient for simple's pct_change()
+                        logger.info(f"Data for {ticker} ({close_data_len} 'Close' rows) too short for Yang-Zhang default window, attempting simple volatility.")
+                        hist_vol = self.calculate_simple_volatility(hist_data) # Relies on its internal robustness
+                    else:
+                        logger.warning(f"Data for {ticker} ({close_data_len} 'Close' rows) too short for any volatility calculation.")
+                else:
+                    logger.warning(f"No 'Close' column or all NaN in 3-month 'Close' data for {ticker}.")
+
+                # Get average volume data
+                if 'Volume' in hist_data.columns and not hist_data['Volume'].dropna().empty:
+                    volume_data_len = len(hist_data['Volume'].dropna())
+                    if volume_data_len > 0: # Check if there's any volume data after dropna
+                        volume_series = hist_data['Volume'].rolling(window=30, min_periods=1).mean().dropna()
+                        if not volume_series.empty:
+                            avg_volume = volume_series.iloc[-1]
+                        else:
+                            logger.warning(f"Volume series for {ticker} is empty after rolling(30).mean().dropna(). Original volume points: {volume_data_len}.")
+                    else:
+                        logger.warning(f"No 'Volume' data points after dropna for {ticker} for rolling mean.")
+                else:
+                    logger.warning(f"No 'Volume' column or all NaN in 3-month 'Volume' data for {ticker}.")
 
             # Check if we have deltas to return
             result_dict = {
